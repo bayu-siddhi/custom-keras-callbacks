@@ -3,15 +3,17 @@ from keras.src.callbacks.early_stopping import EarlyStopping
 class BaselineBasedEarlyStopping(EarlyStopping):
     def __init__(
         self,
+        baseline,
         monitor="val_loss",
         min_delta=0,
         patience=0,
         verbose=0,
         mode="auto",
-        baseline=None,
         restore_best_weights=False,
-        start_from_epoch=0,
+        start_from_epoch=0
     ):
+        # Call __init__ from the parent class
+        # with baseline modified to have no default value
         super().__init__(
             monitor=monitor,
             min_delta=min_delta,
@@ -30,6 +32,7 @@ class BaselineBasedEarlyStopping(EarlyStopping):
         self.best = None
         self.best_weights = None
         self.best_epoch = 0
+        self.has_surpassed_baseline = False
 
     def on_epoch_end(self, epoch, logs=None):
         if self.monitor_op is None:
@@ -45,19 +48,26 @@ class BaselineBasedEarlyStopping(EarlyStopping):
             # then the current weights are the best.
             self.best_weights = self.model.get_weights()
             self.best_epoch = epoch
-
-        self.wait += 1
-        if self._is_improvement(current, self.best):
+        
+        is_improvement = self._is_improvement(current, self.best)
+        if is_improvement:
             self.best = current
             self.best_epoch = epoch
             if self.restore_best_weights:
                 self.best_weights = self.model.get_weights()
-            # Only restart wait if we beat both the baseline and our previous
-            # best.
-            if self.baseline is None or self._is_improvement(
-                current, self.baseline
-            ):
+
+        # Start early stopping wait counter if performance has surpassed baseline,
+        # and keep increasing wait counter if baseline was surpassed before but not now
+        if self.monitor_op(current, self.baseline) or self.has_surpassed_baseline:
+            self.has_surpassed_baseline = True
+            self.wait += 1
+            # Only restart wait counter if we beat our previous best
+            if is_improvement:
                 self.wait = 0
+                return
+        else:
+            # If the baseline has never been surpassed at all,
+            # do nothing and continue training
             return
 
         if self.wait >= self.patience and epoch > 0:
