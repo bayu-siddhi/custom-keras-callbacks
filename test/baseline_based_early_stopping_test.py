@@ -1,17 +1,18 @@
 import numpy as np
 import pytest
 
-from keras.src import callbacks
 from keras.src import layers
 from keras.src import metrics
 from keras.src import models
 from keras.src import ops
 from keras.src import testing
 
+import custom_keras_callbacks as custom_callbacks
 
-class EarlyStoppingTest(testing.TestCase):
+
+class BaselineBasedEarlyStoppingTest(testing.TestCase):
     @pytest.mark.requires_trainable_backend
-    def test_early_stopping(self):
+    def test_baseline_based_early_stopping_mode(self):
         x_train = np.random.random((10, 5))
         y_train = np.random.random((10, 1))
         x_test = np.random.random((10, 5))
@@ -47,8 +48,9 @@ class EarlyStoppingTest(testing.TestCase):
         for mode, monitor, expected_mode in cases:
             patience = 0
             cbks = [
-                callbacks.EarlyStopping(
-                    patience=patience, monitor=monitor, mode=mode
+                custom_callbacks.BaselineBasedEarlyStopping(
+                    baseline=0.9 if expected_mode == "max" else 0.1,
+                    monitor=monitor, patience=patience, mode=mode
                 )
             ]
             model.fit(
@@ -68,7 +70,9 @@ class EarlyStoppingTest(testing.TestCase):
 
         with self.assertRaises(ValueError):
             cbks = [
-                callbacks.EarlyStopping(patience=patience, monitor="unknown")
+                custom_callbacks.BaselineBasedEarlyStopping(
+                    baseline=0.9, monitor="unknown", patience=patience
+                )
             ]
             model.fit(
                 x_train,
@@ -81,12 +85,14 @@ class EarlyStoppingTest(testing.TestCase):
             )
 
     @pytest.mark.requires_trainable_backend
-    def test_early_stopping_patience(self):
+    def test_baseline_based_early_stopping_patience(self):
         cases = [0, 1, 2, 3]
         losses = [10.0, 9.0, 8.0, 9.0, 8.9, 8.8, 8.7, 8.6, 8.5]
 
         for patience in cases:
-            stopper = callbacks.EarlyStopping(monitor="loss", patience=patience)
+            stopper = custom_callbacks.BaselineBasedEarlyStopping(
+                baseline=10.0, monitor="loss", patience=patience
+            )
             stopper.set_model(models.Sequential())
             stopper.model.compile(loss="mse", optimizer="sgd")
             stopper.on_train_begin()
@@ -97,9 +103,59 @@ class EarlyStoppingTest(testing.TestCase):
                     break
 
             self.assertEqual(stopper.stopped_epoch, max(patience, 1) + 2)
+    
+    @pytest.mark.requires_trainable_backend
+    def test_baseline_based_early_stopping_baseline(self):
+        losses = [10.0, 9.0, 8.0, 9.0, 7.9, 7.8, 7.7, 7.6, 7.5, 9.0, 8.0]
+        baselines = [
+            {"baseline": 10.0, "stopped_epoch": 3},
+            {"baseline": 8.1, "stopped_epoch": 3},
+            {"baseline": 7.7, "stopped_epoch": 9},
+            {"baseline": 6.0, "stopped_epoch": 0}
+        ]
+
+        for data in baselines:
+            stopper = custom_callbacks.BaselineBasedEarlyStopping(
+                baseline=data["baseline"], monitor="loss", patience=0
+            )
+            stopper.set_model(models.Sequential())
+            stopper.model.compile(loss="mse", optimizer="sgd")
+            stopper.on_train_begin()
+
+            for epoch, loss in enumerate(losses):
+                stopper.on_epoch_end(epoch=epoch, logs={"loss": loss})
+                if stopper.model.stop_training:
+                    break
+
+            self.assertEqual(stopper.stopped_epoch, data["stopped_epoch"])
 
     @pytest.mark.requires_trainable_backend
-    def test_early_stopping_reuse(self):
+    def test_baseline_based_early_stopping_baseline_with_patience(self):
+        losses = [10.0, 9.0, 8.0, 9.0, 8.8, 7.5, 8.1, 9.1, 8.8, 8.5, 8.0]
+        baselines = [
+            {"baseline": 10.0, "stopped_epoch": 4},
+            {"baseline": 8.1, "stopped_epoch": 4},
+            {"baseline": 7.7, "stopped_epoch": 7},
+            {"baseline": 6.0, "stopped_epoch": 0}
+        ]
+
+        for data in baselines:
+            stopper = custom_callbacks.BaselineBasedEarlyStopping(
+                baseline=data["baseline"], monitor="loss", patience=2
+            )
+            stopper.set_model(models.Sequential())
+            stopper.model.compile(loss="mse", optimizer="sgd")
+            stopper.on_train_begin()
+
+            for epoch, loss in enumerate(losses):
+                stopper.on_epoch_end(epoch=epoch, logs={"loss": loss})
+                if stopper.model.stop_training:
+                    break
+
+            self.assertEqual(stopper.stopped_epoch, data["stopped_epoch"])
+
+    @pytest.mark.requires_trainable_backend
+    def test_baseline_based_early_stopping_reuse(self):
         patience = 3
         data = np.random.random((100, 1))
         labels = np.where(data > 0.5, 1, 0)
@@ -114,7 +170,9 @@ class EarlyStoppingTest(testing.TestCase):
             loss="mae",
             metrics=["mse"],
         )
-        stopper = callbacks.EarlyStopping(monitor="mse", patience=patience)
+        stopper = custom_callbacks.BaselineBasedEarlyStopping(
+            baseline=0.1, monitor="mse", patience=patience
+        )
 
         history1 = model.fit(
             data, labels, callbacks=[stopper], verbose=0, epochs=20
@@ -126,29 +184,7 @@ class EarlyStoppingTest(testing.TestCase):
         )
         self.assertGreaterEqual(len(history2.epoch), patience)
 
-    @pytest.mark.requires_trainable_backend
-    def test_early_stopping_with_baseline(self):
-        baseline = 0.6
-        x_train = np.random.random((10, 5))
-        y_train = np.random.random((10, 1))
-        model = models.Sequential(
-            (
-                layers.Dense(1, activation="relu"),
-                layers.Dense(1, activation="relu"),
-            )
-        )
-        model.compile(optimizer="sgd", loss="mae", metrics=["mse"])
-
-        patience = 3
-        stopper = callbacks.EarlyStopping(
-            monitor="mse", patience=patience, baseline=baseline
-        )
-        hist = model.fit(
-            x_train, y_train, callbacks=[stopper], verbose=0, epochs=20
-        )
-        assert len(hist.epoch) >= patience
-
-    def test_early_stopping_final_weights_when_restoring_model_weights(self):
+    def test_baseline_based_early_stopping_final_weights_when_restoring_model_weights(self):
         class DummyModel:
             def __init__(self):
                 self.stop_training = False
@@ -163,8 +199,11 @@ class EarlyStoppingTest(testing.TestCase):
             def set_weight_to_epoch(self, epoch):
                 self.weights = epoch
 
-        early_stop = callbacks.EarlyStopping(
-            monitor="val_loss", patience=2, restore_best_weights=True
+        early_stop = custom_callbacks.BaselineBasedEarlyStopping(
+            baseline=0.2,
+            monitor="val_loss",
+            patience=2,
+            restore_best_weights=True
         )
         early_stop.set_model(DummyModel())
         losses = [0.2, 0.15, 0.1, 0.11, 0.12]
@@ -184,10 +223,10 @@ class EarlyStoppingTest(testing.TestCase):
         self.assertEqual(early_stop.model.get_weights(), 2)
 
         # Check early stopping when no model beats the baseline.
-        early_stop = callbacks.EarlyStopping(
-            monitor="val_loss",
-            patience=5,
+        early_stop = custom_callbacks.BaselineBasedEarlyStopping(
             baseline=0.5,
+            monitor="val_loss",
+            patience=0,
             restore_best_weights=True,
         )
         early_stop.set_model(DummyModel())
@@ -202,20 +241,20 @@ class EarlyStoppingTest(testing.TestCase):
             if early_stop.model.stop_training:
                 break
         early_stop.on_train_end()
-        # No epoch improves on the baseline, so we should train for only 5
+        # No epoch improves on the baseline, so we should train for all
         # epochs, and restore the second model.
-        self.assertEqual(epochs_trained, 5)
+        self.assertEqual(epochs_trained, 6)
         self.assertEqual(early_stop.model.get_weights(), 2)
 
         # Check weight restoration when another callback requests a stop.
-        early_stop = callbacks.EarlyStopping(
+        early_stop = custom_callbacks.BaselineBasedEarlyStopping(
+            baseline=0.5,
             monitor="val_loss",
             patience=5,
-            baseline=0.5,
             restore_best_weights=True,
         )
         early_stop.set_model(DummyModel())
-        losses = [0.9, 0.8, 0.7, 0.71, 0.72, 0.73]
+        losses = [0.9, 0.8, 0.7, 0.71, 0.72, 0.73, 0.74, 0.75]
         # The best configuration is in the epoch 2 (loss = 0.7000).
         epochs_trained = 0
         early_stop.on_train_begin()
@@ -233,7 +272,7 @@ class EarlyStoppingTest(testing.TestCase):
         self.assertEqual(early_stop.model.get_weights(), 2)
 
     @pytest.mark.requires_trainable_backend
-    def test_early_stopping_with_start_from_epoch(self):
+    def test_baseline_based_early_stopping_with_start_from_epoch(self):
         x_train = np.random.random((10, 5))
         y_train = np.random.random((10, 1))
         model = models.Sequential(
@@ -244,8 +283,9 @@ class EarlyStoppingTest(testing.TestCase):
         )
         model.compile(optimizer="sgd", loss="mae", metrics=["mse"])
         start_from_epoch = 2
-        patience = 3
-        stopper = callbacks.EarlyStopping(
+        patience = 2
+        stopper = custom_callbacks.BaselineBasedEarlyStopping(
+            baseline=0.1,
             monitor="mse",
             patience=patience,
             start_from_epoch=start_from_epoch,
@@ -259,7 +299,8 @@ class EarlyStoppingTest(testing.TestCase):
 
         start_from_epoch = 2
         patience = 0
-        stopper = callbacks.EarlyStopping(
+        stopper = custom_callbacks.BaselineBasedEarlyStopping(
+            baseline=0.1,
             monitor="mse",
             patience=patience,
             start_from_epoch=start_from_epoch,
